@@ -119,6 +119,7 @@ resource "aws_lambda_function" "harborline_loan_summarizer" {
   #checkov:skip=CKV_AWS_116:The function is invoked synchronously and returns its result to the caller, so there are no asynchronous events to send to a dead-letter queue.
   #checkov:skip=CKV_AWS_173:The environment variables hold only non-secret settings (model ID, bucket name, secret ARN). The API key is never put in an environment variable. Lambda still encrypts environment variables at rest with the AWS managed key.
   #checkov:skip=CKV_AWS_272:Code signing is not set up for this project yet. Changes to the function code go through pull request approval (C-07); see the known gaps in the pull request.
+  #checkov:skip=CKV_AWS_115:The account's concurrency limit is too low to reserve any concurrency for this function, so no function-level limit is set. There is no per-function cost guard; see the known gaps in the pull request.
   #checkov:skip=CKV_AWS_50:X-Ray tracing needs xray:PutTraceSegments and xray:PutTelemetryRecords, which only support a wildcard resource, and the role must have no wildcard resources. Logs in CloudWatch cover this function; revisit if tracing is needed.
   function_name = local.harborline_summarizer_name
   description   = "Summarizes one loan document with the Claude Messages API."
@@ -131,9 +132,8 @@ resource "aws_lambda_function" "harborline_loan_summarizer" {
   filename         = data.archive_file.harborline_loan_summarizer.output_path
   source_code_hash = data.archive_file.harborline_loan_summarizer.output_base64sha256
 
-  timeout                        = 30
-  memory_size                    = 256
-  reserved_concurrent_executions = 2
+  timeout     = 30
+  memory_size = 256
 
   # Non-secret settings only. The API key is read from Secrets Manager at run time.
   environment {

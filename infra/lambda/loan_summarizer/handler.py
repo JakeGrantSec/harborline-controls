@@ -4,23 +4,23 @@ Input event:  {"document_key": "<S3 object key in the loan documents bucket>"}
 Output:       {"ok": true, "document_key": ..., "summary": ...}
           or  {"ok": false, "document_key": ..., "error": "<error code>"}
 
-Only the Python standard library is used. Calls to Amazon S3 and AWS Secrets
-Manager are signed here with AWS Signature Version 4, using the temporary
-credentials the Lambda service gives the execution role.
+Amazon S3 and AWS Secrets Manager are called with boto3, which is included in
+the Lambda Python runtime. The Claude Messages API is called over HTTPS with the
+Python standard library. No other packages are used.
 
-Never logged: the API key, the AWS credentials, the document text and the summary.
+Never logged: the API key, the document text and the summary.
 """
 
-import datetime
-import hashlib
-import hmac
 import json
 import logging
 import os
 import ssl
 import urllib.error
-import urllib.parse
 import urllib.request
+
+import boto3
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 
 LOGGER = logging.getLogger()
 LOGGER.setLevel(logging.INFO)
@@ -33,9 +33,18 @@ DEFAULT_MODEL_ID = "claude-haiku-5-5"
 MAX_DOCUMENT_BYTES = 256 * 1024
 MAX_KEY_LENGTH = 1024
 
-# Per-call network timeouts, kept well inside the 30-second function timeout.
-AWS_TIMEOUT_SECONDS = 5
+# Network timeouts, kept well inside the 30-second function timeout.
 ANTHROPIC_TIMEOUT_SECONDS = 20
+AWS_CONFIG = Config(
+    connect_timeout=3,
+    read_timeout=5,
+    retries={"max_attempts": 2, "mode": "standard"},
+)
+
+# Created once per execution environment and reused across invocations.
+# boto3 uses HTTPS endpoints with certificate verification by default.
+S3 = boto3.client("s3", config=AWS_CONFIG)
+SECRETS = boto3.client("secretsmanager", config=AWS_CONFIG)
 
 # Certificate and hostname verification are on in the default context.
 TLS_CONTEXT = ssl.create_default_context()
@@ -57,145 +66,45 @@ class SummarizerError(Exception):
     """An error whose message is a fixed code that is safe to log and return."""
 
 
-# --- AWS Signature Version 4 -------------------------------------------------
-
-
-def _sha256_hex(data):
-    return hashlib.sha256(data).hexdigest()
-
-
-def _hmac_sha256(key, msg):
-    return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
-
-
-def sign_v4(method, host, path, query, headers, payload, service, region, creds, now):
-    """Return the headers for a SigV4-signed request.
-
-    `path` must already be URI-encoded. `creds` is a dict with access_key,
-    secret_key and optional session_token. `now` is a timezone-aware UTC datetime.
-    """
-    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
-    date_stamp = now.strftime("%Y%m%d")
-    payload_hash = _sha256_hex(payload)
-
-    signed = {k.lower(): str(v).strip() for k, v in headers.items()}
-    signed["host"] = host
-    signed["x-amz-date"] = amz_date
-    if creds.get("session_token"):
-        signed["x-amz-security-token"] = creds["session_token"]
-
-    names = sorted(signed)
-    canonical_headers = "".join(f"{n}:{signed[n]}\n" for n in names)
-    signed_headers = ";".join(names)
-    canonical_request = "\n".join(
-        [method, path, query, canonical_headers, signed_headers, payload_hash]
-    )
-
-    scope = f"{date_stamp}/{region}/{service}/aws4_request"
-    string_to_sign = "\n".join(
-        [
-            "AWS4-HMAC-SHA256",
-            amz_date,
-            scope,
-            _sha256_hex(canonical_request.encode("utf-8")),
-        ]
-    )
-
-    key = _hmac_sha256(("AWS4" + creds["secret_key"]).encode("utf-8"), date_stamp)
-    key = _hmac_sha256(key, region)
-    key = _hmac_sha256(key, service)
-    key = _hmac_sha256(key, "aws4_request")
-    signature = hmac.new(key, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
-
-    signed["authorization"] = (
-        f"AWS4-HMAC-SHA256 Credential={creds['access_key']}/{scope}, "
-        f"SignedHeaders={signed_headers}, Signature={signature}"
-    )
-    return signed
-
-
-def _lambda_credentials():
-    try:
-        return {
-            "access_key": os.environ["AWS_ACCESS_KEY_ID"],
-            "secret_key": os.environ["AWS_SECRET_ACCESS_KEY"],
-            "session_token": os.environ.get("AWS_SESSION_TOKEN", ""),
-        }
-    except KeyError:
-        raise SummarizerError("aws_credentials_unavailable") from None
-
-
-def _open(request, timeout, error_code):
-    """Send a request and return (status, body bytes, response headers)."""
-    try:
-        with urllib.request.urlopen(request, timeout=timeout, context=TLS_CONTEXT) as resp:
-            return resp.status, resp.read(), resp.headers
-    except urllib.error.HTTPError as exc:
-        # Log the status only; error bodies are not logged.
-        LOGGER.error("%s: HTTP %s", error_code, exc.code)
-        raise SummarizerError(error_code) from None
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        LOGGER.error("%s: %s", error_code, type(exc).__name__)
-        raise SummarizerError(error_code) from None
-
-
 # --- AWS calls ----------------------------------------------------------------
 
 
-def get_secret_string(secret_id, region, creds):
-    host = f"secretsmanager.{region}.amazonaws.com"
-    payload = json.dumps({"SecretId": secret_id}).encode("utf-8")
-    headers = sign_v4(
-        "POST",
-        host,
-        "/",
-        "",
-        {
-            "content-type": "application/x-amz-json-1.1",
-            "x-amz-target": "secretsmanager.GetSecretValue",
-        },
-        payload,
-        "secretsmanager",
-        region,
-        creds,
-        datetime.datetime.now(datetime.timezone.utc),
-    )
-    request = urllib.request.Request(f"https://{host}/", data=payload, headers=headers, method="POST")
-    _, body, _ = _open(request, AWS_TIMEOUT_SECONDS, "secret_read_failed")
+def _client_error_code(exc):
+    return exc.response.get("Error", {}).get("Code", "Unknown")
+
+
+def get_secret_string(secret_id):
     try:
-        value = json.loads(body)["SecretString"].strip()
-    except (ValueError, KeyError, AttributeError):
-        raise SummarizerError("secret_value_missing") from None
+        response = SECRETS.get_secret_value(SecretId=secret_id)
+    except ClientError as exc:
+        # Log the AWS error code only.
+        LOGGER.error("secret_read_failed: %s", _client_error_code(exc))
+        raise SummarizerError("secret_read_failed") from None
+    except BotoCoreError as exc:
+        LOGGER.error("secret_read_failed: %s", type(exc).__name__)
+        raise SummarizerError("secret_read_failed") from None
+
+    value = (response.get("SecretString") or "").strip()
     if not value:
         raise SummarizerError("secret_value_missing")
     return value
 
 
-def get_document_text(bucket, key, region, creds):
-    host = f"{bucket}.s3.{region}.amazonaws.com"
-    path = "/" + urllib.parse.quote(key, safe="/~")
-    empty_hash = _sha256_hex(b"")
-    headers = sign_v4(
-        "GET",
-        host,
-        path,
-        "",
-        {"x-amz-content-sha256": empty_hash},
-        b"",
-        "s3",
-        region,
-        creds,
-        datetime.datetime.now(datetime.timezone.utc),
-    )
-    request = urllib.request.Request(f"https://{host}{path}", headers=headers, method="GET")
+def get_document_text(bucket, key):
     try:
-        with urllib.request.urlopen(request, timeout=AWS_TIMEOUT_SECONDS, context=TLS_CONTEXT) as resp:
-            data = resp.read(MAX_DOCUMENT_BYTES + 1)
-    except urllib.error.HTTPError as exc:
-        LOGGER.error("document_read_failed: HTTP %s", exc.code)
-        code = "document_not_found" if exc.code in (403, 404) else "document_read_failed"
-        raise SummarizerError(code) from None
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        response = S3.get_object(Bucket=bucket, Key=key)
+        body = response["Body"]
+        try:
+            data = body.read(MAX_DOCUMENT_BYTES + 1)
+        finally:
+            body.close()
+    except ClientError as exc:
+        code = _client_error_code(exc)
+        LOGGER.error("document_read_failed: %s", code)
+        if code in ("NoSuchKey", "AccessDenied", "403", "404"):
+            raise SummarizerError("document_not_found") from None
+        raise SummarizerError("document_read_failed") from None
+    except BotoCoreError as exc:
         LOGGER.error("document_read_failed: %s", type(exc).__name__)
         raise SummarizerError("document_read_failed") from None
 
@@ -259,9 +168,25 @@ def summarize(api_key, model_id, document_text):
         },
         method="POST",
     )
-    _, body, headers = _open(request, ANTHROPIC_TIMEOUT_SECONDS, "model_request_failed")
-    LOGGER.info("model request id: %s", headers.get("request-id", "unknown"))
+    try:
+        with urllib.request.urlopen(
+            request, timeout=ANTHROPIC_TIMEOUT_SECONDS, context=TLS_CONTEXT
+        ) as resp:
+            body = resp.read()
+            request_id = resp.headers.get("request-id", "unknown")
+    except urllib.error.HTTPError as exc:
+        # Log the status and request ID only; error bodies are not logged.
+        LOGGER.error(
+            "model_request_failed: HTTP %s request id: %s",
+            exc.code,
+            exc.headers.get("request-id", "unknown") if exc.headers else "unknown",
+        )
+        raise SummarizerError("model_request_failed") from None
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        LOGGER.error("model_request_failed: %s", type(exc).__name__)
+        raise SummarizerError("model_request_failed") from None
 
+    LOGGER.info("model request id: %s", request_id)
     try:
         response = json.loads(body)
     except ValueError:
@@ -299,15 +224,13 @@ def lambda_handler(event, context):
     key = event.get("document_key") if isinstance(event, dict) else None
     try:
         key = _validate_key(key)
-        region = os.environ["AWS_REGION"]
         bucket = os.environ["DOCUMENTS_BUCKET"]
         secret_id = os.environ["API_KEY_SECRET_ID"]
         model_id = os.environ.get("MODEL_ID") or DEFAULT_MODEL_ID
 
         LOGGER.info("summarizing document key=%s model=%s", key, model_id)
-        creds = _lambda_credentials()
-        text = get_document_text(bucket, key, region, creds)
-        api_key = get_secret_string(secret_id, region, creds)
+        text = get_document_text(bucket, key)
+        api_key = get_secret_string(secret_id)
         summary = summarize(api_key, model_id, text)
         LOGGER.info("summary complete key=%s chars=%d", key, len(summary))
         return {"ok": True, "document_key": key, "summary": summary}
