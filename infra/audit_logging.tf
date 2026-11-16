@@ -14,6 +14,10 @@ locals {
 }
 
 resource "aws_s3_bucket" "harborline_audit_logs" {
+  # Known gap: server access logging for this audit log bucket is deferred.
+  # Object reads of this bucket are not currently recorded: CloudTrail management
+  # events do not record object reads, and data events are not enabled for this
+  # bucket. This is accepted for the sandbox and should be revisited.
   bucket = "harborline-audit-logs-${data.aws_caller_identity.current.account_id}"
 
   tags = {
