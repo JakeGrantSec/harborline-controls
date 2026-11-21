@@ -44,3 +44,12 @@ terraform.rc
 # planout
 # Lambda deployment packages built by the archive provider
 .build/
+
+# Evidence collector output (tester/). The collector also writes a .gitignore
+# containing "*" into every --out folder, so output can't be committed from any path.
+/evidence/
+/tester/evidence/
+
+# Python
+__pycache__/
+*.py[cod]
