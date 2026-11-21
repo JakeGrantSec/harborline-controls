@@ -13,6 +13,12 @@ This is the Harborline controls project for a fictional company; all data is syn
 - Do not run `terraform apply` or any AWS command that changes resources.
 - Ask before installing anything.
 
+## Control library
+
+- The control definitions live in `controls/`: `controls.yaml` (the approved control library) and `approved-lists.yaml` (the approved lists it references).
+- These files are the source of truth for any testing code. Read IDs, test procedures, pass criteria, thresholds and approved lists from them; do not hardcode or redefine them elsewhere.
+- Changes to them require a pull request like any other change (C-07).
+
 ## Infrastructure rules
 
 These apply to every change under `infra/`.

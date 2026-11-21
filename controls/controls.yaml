@@ -1,0 +1,231 @@
+# Harborline Financial Technologies (fictional) - Control Library
+# Source of truth for the automated tester. Changes to this file go through a
+# reviewed pull request (C-07), like any other change.
+
+library:
+  version: "1.0"
+  company: Harborline Financial Technologies (fictional B2B fintech SaaS company)
+  approved_by: JakeGrantSec
+  approved_on: "2026-11-15"
+  amended_on: "2026-11-16"
+  amendments:
+    - C-01 accepts AWS managed KMS keys and is scoped to stores holding customer data.
+    - C-04 rotation is manual at least every 90 days, tested by the age of each secret's current version.
+  note: >-
+    Framework references were drafted from working knowledge and have not yet been
+    checked against the published standards. Verify before citing them.
+
+scope:
+  account: Dedicated AWS account holding synthetic data only.
+  in_scope_tag: {key: scope, value: harborline}
+  audit_log_tag: {key: purpose, value: audit-log}
+  population: Every test covers the full in-scope population, not a sample.
+  evidence_rule: >-
+    Evidence is the raw API output, saved with a timestamp and a SHA-256 hash
+    before anything interprets it.
+  thresholds:
+    secret_max_age_days: 90
+    access_key_max_age_days: 90
+    log_retention_min_days: 365
+    min_tls_version: "1.2"
+
+controls:
+  - id: C-01
+    name: Encryption at rest
+    type: Preventive
+    operates: Continuously
+    tested: Every run
+    statement: >-
+      All in-scope stores holding customer data encrypt data at rest with an AWS
+      KMS key, either AWS managed or customer managed.
+    scope: >-
+      The loan document bucket and the loan records table. Resources tagged
+      purpose=audit-log are excluded and governed by C-03.
+    design_note: >-
+      S3 and DynamoDB encrypt by default with keys that are not visible in the
+      account, so a control that only asks "is it encrypted" cannot fail. This
+      control requires a KMS key, which appears in the account and whose use is
+      logged in CloudTrail. AWS managed keys are accepted, so key management is
+      inherited from AWS.
+    test_procedure:
+      - List in-scope buckets and tables by tag, leaving out any tagged purpose=audit-log.
+      - For each bucket, run get-bucket-encryption and record the algorithm and key.
+      - For each table, run describe-table and record the encryption description. A missing description means the default AWS-owned key.
+      - For each key found, run describe-key and record whether AWS or the customer manages it. For customer-managed keys, also run get-key-rotation-status.
+    evidence: Saved output of each call, plus the list of resources tested.
+    pass_criteria: >-
+      Every in-scope store uses KMS encryption with an AWS managed or
+      customer-managed key, and any customer-managed key has rotation enabled.
+    seeded_failure: A second tagged bucket left on default S3-managed encryption.
+    mappings:
+      soc2: [CC6.1]
+      nist_800_53: [SC-28, SC-28(1)]
+      nist_csf: [PR.DS-01]
+      iso_27001: [A.8.24]
+      ai_governance: [AI RMF MEASURE 2.7 (supporting)]
+
+  - id: C-02
+    name: Encryption in transit
+    type: Preventive
+    operates: Continuously
+    tested: Every run
+    statement: >-
+      All in-scope endpoints and data stores reject unencrypted connections and
+      require TLS 1.2 or higher.
+    test_procedure:
+      - For each in-scope bucket, run get-bucket-policy and confirm a statement that denies requests when aws:SecureTransport is false.
+      - For the customer API, record the endpoint's security policy and confirm a minimum of TLS 1.2.
+      - Confirm the API has no plain HTTP listener or integration exposed to customers.
+    evidence: Saved bucket policies and API endpoint configuration.
+    pass_criteria: >-
+      Every bucket policy contains the deny statement, and the API accepts HTTPS
+      only at TLS 1.2 or higher.
+    seeded_failure: A tagged bucket whose policy lacks the deny statement.
+    mappings:
+      soc2: [CC6.7]
+      nist_800_53: [SC-8, SC-8(1), SC-13]
+      nist_csf: [PR.DS-02]
+      iso_27001: [A.8.24, A.5.14]
+      ai_governance: [AI RMF MEASURE 2.7 (supporting)]
+
+  - id: C-03
+    name: Audit logging
+    type: Detective
+    operates: Continuously
+    tested: Every run
+    statement: >-
+      API activity in all regions and data access to in-scope stores is logged to
+      a tamper-evident, access-restricted log store and retained for at least 365
+      days.
+    test_procedure:
+      - Run describe-trails and confirm a multi-region trail with log file validation enabled.
+      - Run get-trail-status and confirm the trail is logging.
+      - Run get-event-selectors and confirm data events are recorded for the in-scope bucket.
+      - For the log bucket, confirm public access is blocked and the lifecycle rule retains logs for at least 365 days.
+    evidence: Saved trail configuration, trail status, event selectors and log bucket settings.
+    pass_criteria: All four checks pass for the trail that covers the in-scope account.
+    seeded_failure: Log file validation turned off on the trail.
+    known_gap: >-
+      Object reads of the audit log bucket itself are not recorded; accepted for
+      the sandbox.
+    mappings:
+      soc2: [CC7.2]
+      nist_800_53: [AU-2, AU-9, AU-11, AU-12]
+      nist_csf: [PR.PS-04]
+      iso_27001: [A.8.15]
+      ai_governance: [AI RMF MANAGE 4.1, ISO/IEC 42001 A.6.2.8]
+
+  - id: C-04
+    name: Secrets storage
+    type: Preventive
+    operates: Continuously
+    tested: Every run
+    statement: >-
+      Application secrets are stored only in Secrets Manager, are rotated at least
+      every 90 days, and never appear in code, configuration files or environment
+      variables.
+    design_note: >-
+      Rotation is manual. A third-party API key cannot be rotated automatically
+      without custom code, so the key is replaced by hand at least every 90 days,
+      and the test measures the age of the secret's current version.
+    test_procedure:
+      - Run list-secrets, then list-secret-version-ids for each secret, and record the creation date of its current version. The tester reads metadata only; its role is denied the action that retrieves secret values.
+      - For each in-scope Lambda function, read the environment variable names and run a pattern match for credential formats. The script discards the values before saving evidence.
+      - Run a secret scanner over the full history of the repository and record the number of findings.
+    evidence: Secret metadata, variable names with match results, and the scanner report.
+    pass_criteria: >-
+      The current version of every secret is no more than 90 days old, no
+      environment variable matches a credential pattern, and the scanner reports
+      zero findings.
+    seeded_failure: A dummy value in a recognizable API key format placed in a Lambda environment variable.
+    mappings:
+      soc2: [CC6.1]
+      nist_800_53: [IA-5, IA-5(7), SC-12]
+      nist_csf: [PR.AA-01]
+      iso_27001: [A.5.17, A.8.24]
+      ai_governance: [AI RMF MEASURE 2.7 (supporting)]
+
+  - id: C-05
+    name: Authentication
+    type: Preventive
+    operates: Continuously
+    tested: Every run
+    statement: >-
+      Every human identity authenticates with multi-factor authentication, the
+      root account has multi-factor authentication and no access keys, no access
+      key is older than 90 days, and every API method requires authentication.
+    test_procedure:
+      - Generate and retrieve the IAM credential report. For each user with a console password, confirm MFA is active; for each active access key, confirm its age is 90 days or less.
+      - Run get-account-summary and confirm root MFA is enabled and no root access keys exist.
+      - For each method on the customer API, record the authorization type and confirm it is not NONE.
+    evidence: The credential report, the account summary and the API method configuration.
+    pass_criteria: All three checks pass with no exceptions.
+    seeded_failure: A test user with a console password and no MFA device.
+    mappings:
+      soc2: [CC6.1, CC6.6]
+      nist_800_53: [IA-2, IA-2(1), IA-2(2), IA-5]
+      nist_csf: [PR.AA-03]
+      iso_27001: [A.8.5, A.5.17]
+      ai_governance: [AI RMF MEASURE 2.7 (supporting)]
+
+  - id: C-06
+    name: Authorization
+    type: Preventive
+    operates: Continuously
+    tested: Every run
+    statement: >-
+      Access is granted through roles limited to required permissions,
+      administrative access is restricted to an approved list, no in-scope
+      resource is publicly accessible, and the testing agent's role is read-only.
+    test_procedure:
+      - List customer-managed policies and flag any that allow all actions on all resources.
+      - List every identity holding the administrator policy and compare it to the approved list in controls/approved-lists.yaml.
+      - Confirm public access is blocked at the account level and on each in-scope bucket.
+      - List active access analyzer findings for access from outside the account. Findings archived by a reviewed archive rule are not active.
+      - List the policies attached to the testing agent's role and confirm they grant no write actions and deny retrieval of secret values.
+    evidence: Policy documents, the administrator list with the approved list, public access settings, analyzer findings and the tester role's policies.
+    pass_criteria: >-
+      No wildcard policy exists, every administrator is on the approved list,
+      public access is blocked, no external access finding is active, and the
+      tester role is read-only.
+    seeded_failure: A role with a wildcard policy that is not on the approved list.
+    mappings:
+      soc2: [CC6.1, CC6.3]
+      nist_800_53: [AC-2, AC-3, AC-6]
+      nist_csf: [PR.AA-05]
+      iso_27001: [A.5.15, A.5.18, A.8.2, A.8.3]
+      ai_governance: [AI RMF MEASURE 2.7 (supporting)]
+
+  - id: C-07
+    name: Change management
+    type: Preventive
+    operates: Per change
+    tested: Weekly
+    statement: >-
+      Every change to infrastructure code, the control library, and agent code and
+      prompts is made through a pull request that a designated approver other than
+      the author approves before merge, and direct changes to the main branch are
+      blocked.
+    design_note: >-
+      GitHub does not let an author approve their own pull request. The coding
+      agent therefore has its own identity, so that the agent authors and a human
+      approves. That separation is the segregation of duties this control tests.
+    test_procedure:
+      - Read the ruleset for the main branch. Confirm a pull request with at least one approval is required, approvals are dismissed when new commits are pushed, and the bypass list is empty.
+      - List every commit that reached the main branch in the test period and confirm each belongs to a merged pull request.
+      - For each pull request, confirm an approving review exists from a person on the approver list, that the approver is not the author, and that the approval is dated before the merge.
+      - Record any commit or pull request that fails a check as an exception.
+    evidence: The ruleset, the list of commits with their pull requests, and the review records for each pull request.
+    pass_criteria: >-
+      The ruleset is fully enabled and every change in the period has a prior
+      approval from an approver who is not its author.
+    seeded_failure: One change merged through an administrator bypass with no approval.
+    known_exceptions:
+      - The initial README commit that created the repository, before the ruleset existed.
+      - The deployer and tester roles and the Terraform state bucket, created manually as a documented bootstrap exception.
+    mappings:
+      soc2: [CC8.1]
+      nist_800_53: [CM-3, CM-4, CM-5, AC-5]
+      nist_csf: [PR.PS-01, ID.RA-07]
+      iso_27001: [A.8.32, A.5.3]
+      ai_governance: [AI RMF GOVERN 3.2]

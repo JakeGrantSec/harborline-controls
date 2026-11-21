@@ -1,0 +1,23 @@
+# Approved lists referenced by the control library (controls.yaml).
+# Changes go through a reviewed pull request (C-07).
+
+# C-06: identities allowed to hold administrator access.
+approved_administrators:
+  - name: AWSReservedSSO_AdministratorAccess_*
+    type: IAM role (created and managed by IAM Identity Center)
+    reason: The account administrator's sign-in through the AdministratorAccess permission set.
+
+# C-06: roles with broad but scoped permissions that are expected and reviewed.
+approved_privileged_roles:
+  - name: harborline-deployer
+    reason: Used by Terraform to deploy approved changes from the main branch. Cannot modify itself or the tester role.
+
+# C-07: people allowed to approve pull requests.
+approved_change_approvers:
+  - github_user: JakeGrantSec
+    role: Repository owner and control owner
+
+# C-07: identities that author changes and must never approve them.
+change_authors:
+  - github_user: harborline-bot
+    role: Machine account used by the AI coding agent
