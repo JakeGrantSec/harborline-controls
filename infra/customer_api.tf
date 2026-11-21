@@ -127,16 +127,42 @@ resource "aws_api_gateway_deployment" "harborline_customer_api" {
   rest_api_id = aws_api_gateway_rest_api.harborline_customer_api.id
   description = "harborline-customer-api deployment"
 
-  # Redeploy whenever the API definition changes.
+  # Redeploy whenever the API definition changes. Only the IDs and the arguments
+  # set in this file are hashed. Hashing whole resource objects also picked up
+  # attributes AWS normalizes after apply (for example empty lists and maps),
+  # which changed the hash, and replaced the deployment, on every plan.
+  # Add any new API setting to this list so changing it still redeploys.
   triggers = {
     redeployment = sha1(jsonencode([
-      aws_api_gateway_resource.harborline_summarize,
-      aws_api_gateway_method.harborline_summarize_post,
-      aws_api_gateway_integration.harborline_summarize_post,
-      aws_api_gateway_method_response.harborline_summarize_post_200,
-      aws_api_gateway_method_response.harborline_summarize_post_500,
-      aws_api_gateway_integration_response.harborline_summarize_post_200,
-      aws_api_gateway_integration_response.harborline_summarize_post_500,
+      aws_api_gateway_resource.harborline_summarize.id,
+      aws_api_gateway_resource.harborline_summarize.path_part,
+
+      aws_api_gateway_method.harborline_summarize_post.id,
+      aws_api_gateway_method.harborline_summarize_post.http_method,
+      aws_api_gateway_method.harborline_summarize_post.authorization,
+
+      aws_api_gateway_integration.harborline_summarize_post.id,
+      aws_api_gateway_integration.harborline_summarize_post.type,
+      aws_api_gateway_integration.harborline_summarize_post.integration_http_method,
+      aws_api_gateway_integration.harborline_summarize_post.uri,
+      aws_api_gateway_integration.harborline_summarize_post.passthrough_behavior,
+      aws_api_gateway_integration.harborline_summarize_post.request_templates,
+
+      aws_api_gateway_method_response.harborline_summarize_post_200.id,
+      aws_api_gateway_method_response.harborline_summarize_post_200.status_code,
+      aws_api_gateway_method_response.harborline_summarize_post_200.response_models,
+
+      aws_api_gateway_method_response.harborline_summarize_post_500.id,
+      aws_api_gateway_method_response.harborline_summarize_post_500.status_code,
+      aws_api_gateway_method_response.harborline_summarize_post_500.response_models,
+
+      aws_api_gateway_integration_response.harborline_summarize_post_200.id,
+      aws_api_gateway_integration_response.harborline_summarize_post_200.status_code,
+
+      aws_api_gateway_integration_response.harborline_summarize_post_500.id,
+      aws_api_gateway_integration_response.harborline_summarize_post_500.status_code,
+      aws_api_gateway_integration_response.harborline_summarize_post_500.selection_pattern,
+      aws_api_gateway_integration_response.harborline_summarize_post_500.response_templates,
     ]))
   }
 
