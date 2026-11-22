@@ -1,6 +1,6 @@
 """Loads the control library and approved lists from controls/ (the source of truth)."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -34,6 +34,7 @@ class Library:
     version: str
     controls_sha256: str
     approved_lists_sha256: str
+    thresholds: dict = field(default_factory=dict)
 
 
 def _tag(scope, name):
@@ -66,4 +67,5 @@ def load_library(repo_root):
         version=str((data.get("library") or {}).get("version", "")),
         controls_sha256=sha256_hex(controls_raw),
         approved_lists_sha256=sha256_hex(lists_raw),
+        thresholds=dict(scope.get("thresholds") or {}),
     )
