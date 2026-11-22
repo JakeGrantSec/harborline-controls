@@ -298,6 +298,65 @@ class AuthorizationTest(EvaluatorTestCase):
         self.evaluate()
         self.assertResult("C-06.6", "pass")
 
+    def add_tester_actions(self, *actions):
+        self.sample.tester_policy["Statement"].append({"Effect": "Allow", "Action": list(actions), "Resource": "*"})
+
+    def test_approved_non_read_actions_pass_and_are_reported_with_reasons(self):
+        approved = self.sample.library.approved_lists["approved_tester_non_read_actions"]
+        self.add_tester_actions(*(e["action"] for e in approved))
+        self.evaluate()
+        check = self.assertResult("C-06.6", "pass")
+        self.assertEqual([e["action"] for e in check["approved_exceptions"]], [e["action"] for e in approved])
+        for entry in check["approved_exceptions"]:
+            self.assertEqual(entry["used_by"], ["attached policy harborline-example-tester-read"])
+            self.assertTrue(entry["reason"])
+        markdown = (self.run_dir / "results.md").read_text()
+        for entry in approved:
+            self.assertIn(entry["reason"], markdown)
+
+    def test_approved_exceptions_appear_in_the_report_even_when_unused(self):
+        self.evaluate()
+        check = self.assertResult("C-06.6", "pass")
+        self.assertEqual(len(check["approved_exceptions"]), 3)
+        self.assertTrue(all(e["used_by"] == [] for e in check["approved_exceptions"]))
+        self.assertIn("Approved exceptions", (self.run_dir / "results.md").read_text())
+
+    def test_unapproved_non_read_action_still_fails(self):
+        self.add_tester_actions("kms:Get*", "kms:CreateGrant")
+        self.evaluate()
+        check = self.assertResult("C-06.6", "fail")
+        self.assertIn("kms:CreateGrant", check["reason"])
+        self.assertNotIn("kms:Get*", check["reason"].split("approved exception")[0])
+
+    def test_approved_actions_match_exactly_not_by_broader_pattern(self):
+        for n, action in enumerate(("kms:*", "kms:G*", "codedeploy:*", "iam:Generate*", "KMS:Get*")):
+            with self.subTest(action=action):
+                self.run_dir = Path(self._tmp.name) / f"run{n}"
+                self.run_dir.mkdir()
+                self.sample = samples.SampleRun()
+                self.add_tester_actions(action)
+                self.evaluate()
+                self.assertResult("C-06.6", "fail")
+
+    def test_inline_wildcard_policy_fails(self):
+        self.sample.inline_policies[("user", "example-person")] = {"example-everything": {
+            "Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}]}}
+        self.evaluate()
+        check = self.assertResult("C-06.1", "fail")
+        self.assertIn("inline policy example-everything on user example-person", check["reason"])
+
+    def test_inline_policies_of_every_identity_are_tested(self):
+        self.sample.inline_policies[("group", "example-group")] = {"example-group-read": {
+            "Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "s3:List*", "Resource": "*"}]}}
+        self.sample.tester_inline = {"example-tester-inline": {"Version": "2012-10-17", "Statement": [
+            {"Effect": "Allow", "Action": "s3:GetObject", "Resource": "*"}]}}
+        self.evaluate()
+        tested = [p["item"] for p in self.assertResult("C-06.1", "pass")["population"]]
+        self.assertIn("inline policy example-group-read on group example-group", tested)
+        self.assertIn("inline policy harborline-example-read-documents on role "
+                      "harborline-example-summarizer-role", tested)
+        self.assertIn("inline policy example-tester-inline on role harborline-tester", tested)
+
     def test_tester_role_without_secret_deny_fails(self):
         self.sample.tester_policy["Statement"] = self.sample.tester_policy["Statement"][:1]
         self.evaluate()

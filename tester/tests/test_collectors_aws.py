@@ -207,6 +207,11 @@ class C06Test(RunTestCase):
             {"PolicyName": "harborline-fake-policy", "Arn": policy_arn, "DefaultVersionId": "v2"}]}, {"Scope": "Local"})
         iam.add_response("get_policy_version", {"PolicyVersion": {"Document": "{}", "VersionId": "v2"}},
                          {"PolicyArn": policy_arn, "VersionId": "v2"})
+        iam.add_response("get_account_authorization_details", {
+            "RoleDetailList": [{"RoleName": "harborline-fake-role", "RolePolicyList": [
+                {"PolicyName": "harborline-fake-inline", "PolicyDocument": "{}"}]}],
+            "UserDetailList": [], "GroupDetailList": [], "IsTruncated": False},
+            {"Filter": ["User", "Group", "Role"]})
         iam.add_response("list_entities_for_policy", {"PolicyRoles": [
             {"RoleName": "AWSReservedSSO_AdministratorAccess_fake"}]},
             {"PolicyArn": "arn:aws:iam::aws:policy/AdministratorAccess"})
@@ -248,6 +253,8 @@ class C06Test(RunTestCase):
         approved = next(v for k, v in self.saved("C-06").items() if "approved_lists" in k)
         self.assertEqual(approved["source"], "controls/approved-lists.yaml")
         self.assertIn("approved_administrators", approved["content"])
+        inline = next(v for k, v in self.saved("C-06").items() if "GetAccountAuthorizationDetails" in k)
+        self.assertEqual(inline["RoleDetailList"][0]["RolePolicyList"][0]["PolicyName"], "harborline-fake-inline")
 
 
 if __name__ == "__main__":

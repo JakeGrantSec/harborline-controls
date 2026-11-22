@@ -133,6 +133,10 @@ class SampleRun:
             {"Effect": "Deny", "Action": ["secretsmanager:GetSecretValue", "secretsmanager:BatchGetSecretValue"],
              "Resource": "*"}]}
         self.tester_inline = {}
+        # Inline policies on other identities: {(kind, name): {policy name: document}}.
+        self.inline_policies = {("role", "harborline-example-summarizer-role"): {
+            "harborline-example-read-documents": {"Version": "2012-10-17", "Statement": [
+                {"Effect": "Allow", "Action": "s3:GetObject", "Resource": f"arn:aws:s3:::{LOAN_BUCKET}/*"}]}}}
         self.tester_boundary = None
         self.ruleset = {"id": 7, "name": "protect-main", "enforcement": "active", "bypass_actors": [],
                         "rules": [{"type": "pull_request", "parameters": {
@@ -336,6 +340,18 @@ class SampleRun:
             self.aws(c, "iam", "GetPolicyVersion", entry["PolicyName"],
                      {"PolicyVersion": {"Document": policies[entry["PolicyName"]], "VersionId": "v1"}},
                      PolicyArn=entry["Arn"], VersionId="v1")
+        lists = {"user": ("UserDetailList", "UserName", "UserPolicyList"),
+                 "group": ("GroupDetailList", "GroupName", "GroupPolicyList"),
+                 "role": ("RoleDetailList", "RoleName", "RolePolicyList")}
+        details = {key: [] for key, _, _ in lists.values()}
+        inline = dict(self.inline_policies)
+        inline[("role", "harborline-tester")] = self.tester_inline
+        for (kind, name), documents in inline.items():
+            list_key, name_key, policies_key = lists[kind]
+            details[list_key].append({name_key: name, policies_key: [
+                {"PolicyName": n, "PolicyDocument": d} for n, d in documents.items()]})
+        self.aws(c, "iam", "GetAccountAuthorizationDetails", "inline_policies_page001",
+                 dict(details, IsTruncated=False), Filter=["User", "Group", "Role"])
         admin_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
         self.aws(c, "iam", "ListEntitiesForPolicy", "AdministratorAccess_page001", self.administrators,
                  PolicyArn=admin_arn)

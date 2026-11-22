@@ -64,6 +64,7 @@ ALLOWED_OPERATIONS = frozenset({
     ("iam", "GetCredentialReport"),
     ("iam", "GetAccountSummary"),
     ("iam", "ListPolicies"),
+    ("iam", "GetAccountAuthorizationDetails"),
     ("iam", "GetPolicy"),
     ("iam", "GetPolicyVersion"),
     ("iam", "ListEntitiesForPolicy"),
