@@ -75,8 +75,7 @@ Full definitions, test procedures, pass criteria and framework mappings are in
   account-level S3 Block Public Access.
 - The approved control library (C-01 to C-07) and approved lists.
 - The evidence collector, with offline unit tests. It has not yet been run against AWS or GitHub.
-- The evaluator, which is in review (pull request #11), with offline unit tests that show each control's
-  seeded failure is caught. It has not yet been run against real evidence.
+- The evaluator, with offline unit tests that show each control's seeded failure is caught. It has not yet been run against real evidence.
 
 **Planned**
 
