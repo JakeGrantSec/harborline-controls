@@ -101,6 +101,7 @@ class Check:
         self.gaps = []         # reasons the population may be incomplete
         self.evidence = {}     # path -> sha256
         self.empty_reason = None
+        self.extra = {}        # check-specific fields added to the report
         self.result = None
         self.reason = None
 
@@ -170,6 +171,7 @@ class Check:
             "excluded": self.excluded,
             "gaps": self.gaps,
             "evidence": [{"path": p, "sha256": s} for p, s in sorted(self.evidence.items())],
+            **self.extra,
         }
 
 

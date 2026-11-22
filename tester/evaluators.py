@@ -878,7 +878,7 @@ WRITE_PREFIXES = (
     "generate", "sign", "restore", "abort", "complete", "batchwrite", "batchdelete", "batchput", "insert",
 )
 
-READ, WRITE, UNKNOWN = "read", "write", "unknown"
+READ, WRITE, UNKNOWN, APPROVED = "read", "write", "unknown", "approved exception"
 
 
 def classify_action(action):
@@ -912,9 +912,39 @@ def classify_action(action):
     return UNKNOWN
 
 
-def allowed_actions(document):
-    """{classification: [actions]} for the Allow statements of one policy."""
-    found = {READ: [], WRITE: [], UNKNOWN: []}
+INLINE_POLICY_LISTS = (
+    ("user", "UserDetailList", "UserName", "UserPolicyList"),
+    ("group", "GroupDetailList", "GroupName", "GroupPolicyList"),
+    ("role", "RoleDetailList", "RoleName", "RolePolicyList"),
+)
+APPROVED_EXCEPTION_FIELDS = ("action", "reason", "approved_by", "approved_on")
+
+
+def approved_tester_exceptions(ctx, check):
+    """{action: entry} from approved_tester_non_read_actions. Every valid entry is
+    recorded on the check so it appears in every report; an incomplete entry is
+    not applied and is reported as a gap."""
+    exceptions = {}
+    shown = []
+    for n, entry in enumerate(ctx.library.approved_lists.get("approved_tester_non_read_actions") or [], start=1):
+        if not isinstance(entry, dict) or not all(isinstance(entry.get(f), str) and entry.get(f).strip()
+                                                  for f in APPROVED_EXCEPTION_FIELDS):
+            check.gap(f"entry {n} of approved_tester_non_read_actions lacks one of "
+                      f"{', '.join(APPROVED_EXCEPTION_FIELDS)}, so it was not applied")
+            continue
+        record = {f: entry[f] for f in APPROVED_EXCEPTION_FIELDS}
+        record["used_by"] = []
+        exceptions[entry["action"]] = record
+        shown.append(record)
+    check.extra["approved_exceptions"] = shown
+    return exceptions
+
+
+def allowed_actions(document, approved=None):
+    """{classification: [actions]} for the Allow statements of one policy. A
+    non-read action that exactly matches an approved exception is APPROVED."""
+    approved = approved or {}
+    found = {READ: [], WRITE: [], UNKNOWN: [], APPROVED: []}
     for st in statements(document):
         if st.get("Effect") != "Allow":
             continue
@@ -922,7 +952,10 @@ def allowed_actions(document):
             found[WRITE].append("NotAction: everything except " + ", ".join(map(str, as_list(st["NotAction"]))))
             continue
         for action in as_list(st.get("Action")):
-            found[classify_action(action)].append(str(action))
+            kind = classify_action(action)
+            if kind != READ and isinstance(action, str) and action in approved:
+                kind = APPROVED
+            found[kind].append(str(action))
     return found
 
 
@@ -968,23 +1001,50 @@ def _managed_policy(ctx, c, arn):
 def evaluate_c06(ctx):
     c = "C-06"
     approved = ctx.library.approved_lists.get("approved_administrators") or []
-    c1 = Check("C-06.1", "No customer-managed IAM policy allows all actions (*) on all resources (*).")
+    c1 = Check("C-06.1", "No customer-managed IAM policy, and no inline policy on any IAM role, user or group, "
+                         "allows all actions (*) on all resources (*).")
     c2 = Check("C-06.2", "Every identity holding the AdministratorAccess policy matches an entry in "
                          "approved_administrators (controls/approved-lists.yaml), including * patterns.")
     c3 = Check("C-06.3", "S3 Block Public Access is on at the account level (all four settings).")
     c4 = Check("C-06.4", "S3 Block Public Access is on for every in-scope bucket (all four settings).")
     c5 = Check("C-06.5", "No active IAM Access Analyzer finding reports access from outside the account.")
-    c6 = Check("C-06.6", "The tester role's policies grant no write actions (it is read-only).")
+    c6 = Check("C-06.6", "The tester role's policies grant no write actions (it is read-only), apart from the "
+                         "actions in approved_tester_non_read_actions (controls/approved-lists.yaml), matched "
+                         "exactly as written.")
+    exceptions = approved_tester_exceptions(ctx, c6)
     c7 = Check("C-06.7", "The tester role's policies explicitly deny retrieving secret values "
                          "(secretsmanager:GetSecretValue on all secrets).")
 
-    # C-06.1 wildcard customer-managed policies.
+    # C-06.1 wildcard customer-managed and inline policies.
     pages = ctx.ev.find(c, "iam", "ListPolicies")
     c1.use(*pages)
     for gap in _list_gaps(pages, "customer-managed policy", "ListPolicies"):
         c1.gap(gap)
-    if pages and not any(p.error for p in pages):
-        c1.allow_empty("ListPolicies (Scope=Local) returned no customer-managed policies.")
+    details = ctx.ev.find(c, "iam", "GetAccountAuthorizationDetails")
+    c1.use(*details)
+    for gap in _list_gaps(details, "inline policy", "GetAccountAuthorizationDetails"):
+        c1.gap(gap)
+    for page in details:
+        missing = {"User", "Group", "Role"} - set(as_list(page.params.get("Filter")))
+        if page.params.get("Filter") and missing:
+            c1.gap(f"GetAccountAuthorizationDetails was filtered without {', '.join(sorted(missing))}, so some "
+                   "inline policies were not collected")
+    if pages and details and not any(p.error for p in pages + details):
+        c1.allow_empty("There are no customer-managed policies and no inline policies on any IAM role, user "
+                       "or group.")
+    for page in details:
+        data = page.data() or {} if not page.error else {}
+        for kind, list_key, name_key, policies_key in INLINE_POLICY_LISTS:
+            for entity in data.get(list_key) or []:
+                for inline in entity.get(policies_key) or []:
+                    label = f"inline policy {inline.get('PolicyName')} on {kind} {entity.get(name_key)}"
+                    document = policy_document(inline.get("PolicyDocument"))
+                    if document is None:
+                        c1.add(label, NOT_TESTED, "the policy document could not be read", [page])
+                    elif allows_everything(document):
+                        c1.add(label, FAIL, "allows Action * on Resource *", [page])
+                    else:
+                        c1.add(label, PASS, "no statement allows all actions on all resources", [page])
     for page in pages:
         for policy in (page.data() or {}).get("Policies") or [] if not page.error else []:
             label = f"policy {policy.get('PolicyName')}"
@@ -1002,8 +1062,6 @@ def evaluate_c06(ctx):
                 c1.add(label, FAIL, f"allows Action * on Resource * (attached to {attached} identities)", found)
             else:
                 c1.add(label, PASS, "no statement allows all actions on all resources", found)
-    c1.exclude("inline policies of users, groups and roles", "not listed by the test procedure "
-               "(customer-managed policies only); the tester role's inline policies are checked in C-06.6")
 
     # C-06.2 administrators against the approved list.
     pages = ctx.ev.find(c, "iam", "ListEntitiesForPolicy")
@@ -1088,11 +1146,11 @@ def evaluate_c06(ctx):
         c5.decide(NOT_TESTED, "No active external access analyzer (type ACCOUNT or ORGANIZATION) was found, so "
                               "external access findings cannot be checked.")
 
-    _evaluate_tester_role(ctx, c, c6, c7)
+    _evaluate_tester_role(ctx, c, c6, c7, exceptions)
     return [c1, c2, c3, c4, c5, c6, c7]
 
 
-def _evaluate_tester_role(ctx, c, c6, c7):
+def _evaluate_tester_role(ctx, c, c6, c7, exceptions):
     roles = ctx.ev.find(c, "iam", "GetRole")
     if not roles or roles[0].error:
         reason = f"GetRole returned {roles[0].error}" if roles else "no GetRole output for the tester role"
@@ -1147,28 +1205,36 @@ def _evaluate_tester_role(ctx, c, c6, c7):
     # C-06.6: effective permissions are within both the identity policies and the
     # boundary, so the role is read-only if either set allows only read actions.
     def summary(document):
-        found = allowed_actions(document)
+        found = allowed_actions(document, exceptions)
         return found, (WRITE if found[WRITE] else UNKNOWN if found[UNKNOWN] else READ)
 
     identity_results = [(label, *summary(doc)) for label, doc in identity]
     boundary_result = (boundary[0], *summary(boundary[1])) if boundary else None
     limited = boundary_result is not None and boundary_result[2] == READ
 
+    def approved_note(label, found):
+        for action in dict.fromkeys(found[APPROVED]):
+            exceptions[action]["used_by"].append(label)
+        return "".join(f"; approved exception {a} ({exceptions[a]['reason']})" for a in dict.fromkeys(found[APPROVED]))
+
     for label, found, verdict in identity_results:
+        note = approved_note(label, found)
         if verdict == READ:
-            c6.add(label, PASS, f"allows only read actions ({len(found[READ])} action pattern(s))")
+            c6.add(label, PASS, f"allows only read actions ({len(found[READ])} action pattern(s)){note}")
         elif limited:
             c6.add(label, PASS, f"allows {items_text(found[WRITE] + found[UNKNOWN])}, but the read-only "
-                                "permissions boundary removes them")
+                                f"permissions boundary removes them{note}")
         elif verdict == WRITE:
-            c6.add(label, FAIL, f"allows write actions: {items_text(found[WRITE])}")
+            c6.add(label, FAIL, f"allows write actions not on the approved list: {items_text(found[WRITE])}{note}")
         else:
-            c6.add(label, NOT_TESTED, f"allows actions the evaluator cannot classify: {items_text(found[UNKNOWN])}")
+            c6.add(label, NOT_TESTED, f"allows actions the evaluator cannot classify: "
+                                      f"{items_text(found[UNKNOWN])}{note}")
     if boundary_result:
         label, found, verdict = boundary_result
+        note = approved_note(label, found)
         if verdict == READ:
             c6.add(label, PASS, "allows only read actions, so the role is read-only whatever its identity "
-                                "policies allow")
+                                f"policies allow{note}")
         else:
             c6.exclude(label, f"allows {items_text(found[WRITE] + found[UNKNOWN])}; a boundary grants nothing by "
                               "itself, so the identity policies decide")

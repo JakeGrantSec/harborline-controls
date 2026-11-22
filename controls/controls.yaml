@@ -3,14 +3,16 @@
 # reviewed pull request (C-07), like any other change.
 
 library:
-  version: "1.0"
+  version: "1.1"
   company: Harborline Financial Technologies (fictional B2B fintech SaaS company)
   approved_by: JakeGrantSec
   approved_on: "2026-11-15"
-  amended_on: "2026-11-16"
+  amended_on: "2026-11-21"
   amendments:
     - C-01 accepts AWS managed KMS keys and is scoped to stores holding customer data.
     - C-04 rotation is manual at least every 90 days, tested by the age of each secret's current version.
+    - "2026-11-21: C-06 allows the tester role the non-read actions listed in approved_tester_non_read_actions (approved-lists.yaml); any other non-read action still fails."
+    - "2026-11-21: C-06 wildcard policy check covers every inline policy on every IAM role, user and group, as well as customer-managed policies."
   note: >-
     Framework references were drafted from working knowledge and have not yet been
     checked against the published standards. Verify before citing them.
@@ -178,7 +180,7 @@ controls:
       administrative access is restricted to an approved list, no in-scope
       resource is publicly accessible, and the testing agent's role is read-only.
     test_procedure:
-      - List customer-managed policies and flag any that allow all actions on all resources.
+      - List customer-managed policies and every inline policy on every IAM role, user and group, and flag any that allow all actions on all resources.
       - List every identity holding the administrator policy and compare it to the approved list in controls/approved-lists.yaml.
       - Confirm public access is blocked at the account level and on each in-scope bucket.
       - List active access analyzer findings for access from outside the account. Findings archived by a reviewed archive rule are not active.
@@ -187,7 +189,7 @@ controls:
     pass_criteria: >-
       No wildcard policy exists, every administrator is on the approved list,
       public access is blocked, no external access finding is active, and the
-      tester role is read-only.
+      tester role is read-only apart from actions approved in approved-lists.yaml.
     seeded_failure: A role with a wildcard policy that is not on the approved list.
     mappings:
       soc2: [CC6.1, CC6.3]

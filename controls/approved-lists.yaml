@@ -12,6 +12,22 @@ approved_privileged_roles:
   - name: harborline-deployer
     reason: Used by Terraform to deploy approved changes from the main branch. Cannot modify itself or the tester role.
 
+# C-06: non-read actions the tester role may hold. Matched exactly as written;
+# any other non-read action still fails C-06.
+approved_tester_non_read_actions:
+  - action: codedeploy:Batch*
+    reason: Batch reads of deployment information; changes no resource.
+    approved_by: JakeGrantSec
+    approved_on: "2026-11-21"
+  - action: iam:GenerateServiceLastAccessedDetails
+    reason: Starts an access report; changes no resource.
+    approved_by: JakeGrantSec
+    approved_on: "2026-11-21"
+  - action: kms:Get*
+    reason: Reads key policies, rotation status and public keys; changes no resource.
+    approved_by: JakeGrantSec
+    approved_on: "2026-11-21"
+
 # C-07: people allowed to approve pull requests.
 approved_change_approvers:
   - github_user: JakeGrantSec

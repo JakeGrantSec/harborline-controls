@@ -94,8 +94,9 @@ These are recorded in `controls/controls.yaml` and in earlier pull requests.
 - **C-05:** MFA is checked only for IAM users. Users who sign in through IAM Identity Center, including the
   approved administrator, aren't covered by the credential report.
 - **C-02:** the loan records table is covered by the control statement but not by its test procedure.
-- **C-06:** only customer-managed policies are checked for wildcards, not inline policies. The evaluator
-  decides the tester role is read-only by matching action names, not by AWS's own access-level reference.
+- **C-06:** the evaluator decides the tester role is read-only by matching action names, not by AWS's own
+  access-level reference. Three non-read actions are allowed as approved exceptions, listed with reasons in
+  `controls/approved-lists.yaml`.
 - **C-07:** the repository's first commit predates the branch rules. The deployer and tester roles and the
   Terraform state bucket were created by hand as a bootstrap exception.
 - **Framework references** in the control library have not yet been checked against the published standards.

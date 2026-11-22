@@ -280,6 +280,10 @@ def collect_c06(run):
             run.call(c, iam, "get_policy_version", policy["PolicyName"],
                      PolicyArn=policy["Arn"], VersionId=policy["DefaultVersionId"])
 
+    # Every inline policy on every IAM user, group and role (read-only, paginated).
+    run.paginate(c, iam, "get_account_authorization_details", "inline_policies",
+                 Filter=["User", "Group", "Role"])
+
     # Identities holding the administrator policy, saved with the approved list.
     admin_arn = f"arn:{run.partition}:iam::aws:policy/AdministratorAccess"
     run.paginate(c, iam, "list_entities_for_policy", "AdministratorAccess", PolicyArn=admin_arn)

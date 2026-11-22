@@ -50,6 +50,12 @@ def render_markdown(results):
                 lines += [f"| {_md(p['item'])} | {LABELS.get(p['result'], p['result'])} | {_md(p['detail'])} |"
                           for p in check["population"]]
                 lines.append("")
+            if "approved_exceptions" in check:
+                lines.append("Approved exceptions (controls/approved-lists.yaml, matched exactly as written):")
+                lines += [f"- `{_md(e['action'])}`: {_md(e['reason'])} Approved by {_md(e['approved_by'])} on "
+                          f"{_md(e['approved_on'])}. Used by: {_md(', '.join(e['used_by']) or 'no policy')}."
+                          for e in check["approved_exceptions"]] or ["- none"]
+                lines.append("")
             if check["excluded"]:
                 lines.append("Left out:")
                 lines += [f"- {_md(e['item'])}: {_md(e['reason'])}" for e in check["excluded"]]
